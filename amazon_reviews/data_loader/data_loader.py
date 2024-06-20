@@ -46,7 +46,7 @@ class AmazonReviewsDataLoader:
         Creates reviews dataframe
         :return: pd.Dataframe
         """
-        self.download_data()
+        #self.download_data()
 
         df_list = []
 

@@ -1,23 +1,35 @@
 # Databricks notebook source
-# MAGIC %pip install /dbfs/upload/amazon-reviews/amazon_reviews-0.0.1-py3-none-any.whl
+# MAGIC %pip install poetry
+# MAGIC dbutils.library.restartPython()
+# MAGIC dbutils.fs.mkdirs("dbfs:/upload/amazon_reviews")
 
 # COMMAND ----------
 
-# Train category model
+# MAGIC %sh
+# MAGIC poetry install
+# MAGIC poetry lock
+# MAGIC poetry build
+# MAGIC rm /dbfs/upload/amazon_reviews/amazon-reviews-0.0.1-py3-none-any.whl
+# MAGIC cp dist/amazon_reviews-0.0.1-py3-none-any.whl /dbfs/upload/amazon_reviews/amazon-reviews-0.0.1-py3-none-any.whl
+
+# COMMAND ----------
+
+# MAGIC %pip install /dbfs/upload/amazon_reviews/amazon-reviews-0.0.1-py3-none-any.whl
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
 from amazon_reviews.data_loader.data_loader import AmazonReviewsDataLoader
-import nltk
-from nltk.corpus import stopwords
 from sklearn.feature_extraction.text import CountVectorizer, TfidfTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
 import mlflow
 import argparse
 import os
+import nltk
+from nltk.corpus import stopwords
 
-PATH = '/dbfs/FileStore/shared_uploads/amazon_reviews'
+PATH = '/dbfs/tmp/amazon_reviews'
 
 # COMMAND ----------
 
@@ -48,6 +60,27 @@ with mlflow.start_run(run_name='amazon-category-model') as run:
 
     model_version = mlflow.register_model(model_uri=f"runs:/{mlflow_run_id}/model",
                                           name='amazon-category-model')
+
+# COMMAND ----------
+
+import mlflow
+import mlflow.sklearn
+import pandas as pd
+
+# Load the registered model
+model_name = "amazon-category-model"
+model_version = 1  # Use the appropriate version number
+model_uri = f"models:/{model_name}/{model_version}"
+model = mlflow.sklearn.load_model(model_uri)
+
+# Prepare new data
+new_data = ["Very bad product"]
+new_data_df = pd.DataFrame(new_data, columns=["Text"])
+
+# Make predictions
+predictions = model.predict(new_data_df["Text"].values)
+print(predictions)
+
 
 # COMMAND ----------
 
@@ -89,11 +122,6 @@ response = requests.post(
 
 print("Response status:", response.status_code)
 print("Reponse text:", response.text)
-
-# COMMAND ----------
-
-# Model based collaborative filtering; 
-# https://medium.com/@gazzaazhari/model-based-collaborative-filtering-systems-with-machine-learning-algorithm-d5994ae0f53b
 
 # COMMAND ----------
 
@@ -182,21 +210,42 @@ with mlflow.start_run(run_name="amazon-recommender") as run:
 
     conda_env = _mlflow_conda_env(
         additional_conda_deps=None,
-        additional_pip_deps=["code/amazon_reviews-0.0.1-py3-none-any.whl",
-                             "pyspark==3.3.0"
-                             ],
+        additional_pip_deps=["code/amazon_reviews/amazon-reviews-0.0.1-py3-none-any.whl","pyspark==3.1.2"],
         additional_conda_channels=None,
     )
-    # this does not work because of pyspark:
-    # https://docs.databricks.com/machine-learning/model-serving/private-libraries-model-serving.html
 
     mlflow.pyfunc.log_model("model",
                             python_model=wrapped_model,
                             conda_env = conda_env,
-                            code_path = ["/dbfs/upload/amazon-reviews/amazon_reviews-0.0.1-py3-none-any.whl"])
+                            code_path=["/dbfs/upload/amazon_reviews"])
 
     model_version = mlflow.register_model(model_uri=f"runs:/{mlflow_run_id}/model",
                                           name='amazon-recommender')
+
+# COMMAND ----------
+
+import mlflow
+
+client = mlflow.tracking.MlflowClient()
+latest_version_info = client.get_latest_versions(name='amazon-recommender', stages=['None'])
+
+latest_version = latest_version_info[0].version
+print(f"Latest version of amazon-recommender model: {latest_version}")
+
+
+# COMMAND ----------
+
+import pandas as pd
+model_name = "amazon-recommender"
+model_version = latest_version
+model_uri = f"models:/{model_name}/{model_version}"
+model = mlflow.pyfunc.load_model(model_uri)
+
+product_id = "B00000J0FW"
+input_data = pd.DataFrame({'basket': [product_id], 'customer_id': 'abcdefg12345678abcdefg'})
+
+predictions = model.predict(input_data)
+print(predictions)
 
 # COMMAND ----------
 
@@ -206,7 +255,7 @@ endpoint_name='amazon-recommender'
 config = {
     "served_models": [{
         "model_name": "amazon-recommender",
-        "model_version": f"{dict(model_version)['version']}",
+        "model_version": latest_version,
         "workload_size": "Small",
         "scale_to_zero_enabled": False,
     }]
